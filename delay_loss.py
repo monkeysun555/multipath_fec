@@ -2,12 +2,17 @@ import numpy as np
 import os
 import scipy.sparse.linalg as sla
 import show
+import matrix 
 
 SIM_LEN = 20000
 IS_BURSTY = 1
 IS_MULTIPATH = 0
 if IS_MULTIPATH == 1:
 	NUM_PATH = 2
+	MUL_LOSSES = [9, 9]		# Percentage
+	MUL_BURSTYS = [1, 0]	# Percentage
+else:
+	PATH_LOSS = 30			# Percentage
 IS_PLOT = 0
 
 THROUGHPUT = 2000.0 	# Kbits per second
@@ -26,20 +31,10 @@ RANDOM_SEED = 20
 RAND_RANGE = 1000
 
 # Assuming do FEC before multipath
-NON_BURSTY_MAT = [[0.906, 0.094, 0, 0, 0],
-				[0.97, 0, 0.03, 0, 0],
-				[1, 0, 0, 0, 0],
-				[1, 0, 0, 0, 0],
-				[1, 0, 0, 0, 0]]
 
-BURSTY_MAT = [[0.92, 0.08, 0, 0, 0],
-			[0.89, 0, 0.11, 0, 0],
-			[0.95, 0, 0, 0.05, 0],
-			[0.97, 0, 0, 0, 0.03],
-			[1.0, 0, 0, 0, 0]]
 
 if not IS_PLOT:
-	TESTING_LEN = 200000
+	TESTING_LEN = 500000
 else:
 	TESTING_LEN = 500
 ORI_SIZE = 4
@@ -92,13 +87,18 @@ def calculate_loss_of_path(send_t, recv_t):
 	ratios = []
 	for i in range(len(send_t)):
 		# print send_t[i]
-		transformed_recv_t = [item[:-1] for item in recv_t[i]]
+		transformed_recv_t = [item[0] for item in recv_t[i]]
+		transformed_send_t = [item[0] for item in send_t[i]]
 		temp_loss_idx = []
-		temp_loss = list(set(send_t[i]) - set(transformed_recv_t))
-		loss_rec.append(temp_loss)
+		temp_loss_full_info = []
+		temp_loss = list(set(transformed_send_t) - set(transformed_recv_t))
+
 		for loss in temp_loss:
-			temp_loss_idx.append(send_t[i].index(loss))
+			loss_idx = transformed_send_t.index(loss)
+			temp_loss_idx.append(loss_idx)
+			temp_loss_full_info.append(send_t[i][loss_idx])
 		loss_idx_plot.append(temp_loss_idx)
+		loss_rec.append(temp_loss_full_info)
 		ratios.append(float(len(temp_loss))/len(send_t[i])*100)
 	return loss_rec, loss_idx_plot, ratios
 
@@ -278,24 +278,27 @@ def main():
 
 	# Intial sending time
 	encoded_pkts, total_n_fecs, pre_encoding_pkts = generate_sending_encoding_pkts()
-	if IS_BURSTY:
-		prob_mat = BURSTY_MAT
-	else:
-		prob_mat = NON_BURSTY_MAT
-	e_val, e_vec = sla.eigs(np.array(prob_mat).T, k=1, which='LM')
-	cum_e_vec = np.cumsum(e_vec)
-	cum_mat = [np.cumsum(prob) for prob in prob_mat]
-	exp_ratio, loss_show = ratio_testing(cum_e_vec, cum_mat)
-	print "Steady Matrix:", e_vec
-	print "Expected loss ratio (single path) is", exp_ratio, "%"
-	print "<===============>"
-
 	call_back_pkts = pre_encoding_pkts[:]
 	if IS_MULTIPATH:
 		splited_traces = split_trace(encoded_pkts)
 		recv_traces = []
 		# print splited_traces
 		for trace in splited_traces[:]:
+			trace_idx = splited_traces.index(trace)
+			assert len(splited_traces) == len(MUL_LOSSES)
+			assert len(splited_traces) == len(MUL_BURSTYS)
+			loss = MUL_LOSSES[trace_idx]
+			temp_bursty = MUL_BURSTYS[trace_idx]
+			prob_mat = matrix.get_matrix(temp_bursty, loss)
+		
+			e_val, e_vec = sla.eigs(np.array(prob_mat).T, k=1, which='LM')
+			cum_e_vec = np.cumsum(e_vec)
+			cum_mat = [np.cumsum(prob) for prob in prob_mat]
+			exp_ratio, loss_show = ratio_testing(cum_e_vec, cum_mat)
+			print "Steady Matrix:", e_vec
+			print "Expected loss ratio on path" + str(trace_idx + 1) + " is ", exp_ratio, "%"
+			print "<===============>"
+
 			recv_trace = single_path_deliver(trace, cum_e_vec, cum_mat)
 			# if len(recv_trace) > 0:
 			recv_traces.append(recv_trace)
@@ -305,10 +308,19 @@ def main():
 		rec_trace = combine_traces(recv_traces)
 
 	else:
+		prob_mat =  matrix.get_matrix(IS_BURSTY, PATH_LOSS)
+		e_val, e_vec = sla.eigs(np.array(prob_mat).T, k=1, which='LM')
+		cum_e_vec = np.cumsum(e_vec)
+		cum_mat = [np.cumsum(prob) for prob in prob_mat]
+		exp_ratio, loss_show = ratio_testing(cum_e_vec, cum_mat)
+		print "Steady Matrix:", e_vec
+		print "Expected loss ratio (single path) is", exp_ratio, "%"
+		print "<===============>"
+
 		rec_trace = single_path_deliver(encoded_pkts, cum_e_vec, cum_mat)
 
 	decoded_trace, n_wasted_pkts = fec_decoding(rec_trace, call_back_pkts)
-	print decoded_trace
+	# print decoded_trace
 	# Get delay here
 	throughput = get_tp(decoded_trace)
 	latency, jitter = get_delay_info(decoded_trace)
